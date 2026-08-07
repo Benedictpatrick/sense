@@ -47,3 +47,6 @@ next-env.d.ts
 training/.venv
 training/__pycache__
 **/__pycache__
+
+# regenerable synthetic dataset (run training/simulate.py to recreate)
+training/data/*.npz
