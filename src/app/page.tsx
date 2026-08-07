@@ -30,9 +30,18 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="w-full rounded-lg border border-dashed border-neutral-300 p-5 text-left opacity-60">
+      <section className="w-full rounded-lg border border-neutral-200 p-5 text-left">
         <h2 className="text-lg font-semibold">GestureTalk</h2>
-        <p className="mt-1 text-sm text-neutral-500">Sign-language-to-voice. Coming next.</p>
+        <p className="mt-1 text-sm text-neutral-500">
+          Sign-language-to-voice. Common words via hand-pose rules, A-Z fingerspelling via a CNN
+          trained on real public ASL data.
+        </p>
+        <Link
+          href="/gesture"
+          className="mt-4 inline-block rounded-md bg-black px-4 py-2 text-sm font-medium text-white"
+        >
+          Try Live Detection →
+        </Link>
       </section>
     </main>
   );
