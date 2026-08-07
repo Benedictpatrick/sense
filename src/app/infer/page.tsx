@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { generateChirp, crossCorrelate, findPeakIndex, delaySamplesToDistanceM, extractFeatures } from "@/lib/chirp";
 import { emitAndCapture, getMicStream } from "@/lib/echoEngine";
-import { loadModel, loadLabels, classify, type Prediction } from "@/lib/model";
+import { loadModel, loadLabels, classify } from "@/lib/model";
 import { AdaptiveController, signalRatio, type AdaptiveState } from "@/lib/adaptiveController";
 import { EchoSenseLedDevice, bluetoothSupported } from "@/lib/ble";
+import { PredictionSmoother, type SmoothedPrediction } from "@/lib/predictionSmoother";
 
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 
@@ -30,7 +31,7 @@ function vibrationPattern(label: string, distanceM: number): number[] {
 export default function InferPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [prediction, setPrediction] = useState<Prediction | null>(null);
+  const [prediction, setPrediction] = useState<SmoothedPrediction | null>(null);
   const [distanceM, setDistanceM] = useState<number | null>(null);
   const [adaptiveState, setAdaptiveState] = useState<AdaptiveState>({ gain: 0.85, intervalMs: 350 });
   const [ledConnected, setLedConnected] = useState(false);
@@ -41,6 +42,7 @@ export default function InferPage() {
   const modelRef = useRef<Awaited<ReturnType<typeof loadModel>> | null>(null);
   const labelsRef = useRef<string[]>([]);
   const controllerRef = useRef(new AdaptiveController());
+  const smootherRef = useRef(new PredictionSmoother());
   const runningRef = useRef(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -52,7 +54,8 @@ export default function InferPage() {
       const chirp = generateChirp(result.sampleRate);
 
       const feat = extractFeatures(result.waveform, chirp, result.chirpStartSample, result.sampleRate);
-      const pred = await classify(modelRef.current, labelsRef.current, feat);
+      const raw = await classify(modelRef.current, labelsRef.current, feat);
+      const pred = smootherRef.current.update(raw.probabilities);
       setPrediction(pred);
 
       const corr = crossCorrelate(result.waveform, chirp);
@@ -94,6 +97,7 @@ export default function InferPage() {
         modelRef.current = await loadModel();
         labelsRef.current = await loadLabels();
       }
+      smootherRef.current.reset();
       setStatus("running");
       runningRef.current = true;
       runCycle();
