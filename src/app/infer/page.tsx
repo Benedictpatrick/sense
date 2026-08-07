@@ -6,6 +6,7 @@ import { generateChirp, crossCorrelate, findPeakIndex, delaySamplesToDistanceM, 
 import { emitAndCapture, getMicStream } from "@/lib/echoEngine";
 import { loadModel, loadLabels, classify, type Prediction } from "@/lib/model";
 import { AdaptiveController, signalRatio, type AdaptiveState } from "@/lib/adaptiveController";
+import { EchoSenseLedDevice, bluetoothSupported } from "@/lib/ble";
 
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 
@@ -32,8 +33,11 @@ export default function InferPage() {
   const [prediction, setPrediction] = useState<Prediction | null>(null);
   const [distanceM, setDistanceM] = useState<number | null>(null);
   const [adaptiveState, setAdaptiveState] = useState<AdaptiveState>({ gain: 0.85, intervalMs: 350 });
+  const [ledConnected, setLedConnected] = useState(false);
+  const [ledError, setLedError] = useState<string | null>(null);
 
   const streamRef = useRef<MediaStream | null>(null);
+  const ledDeviceRef = useRef<EchoSenseLedDevice | null>(null);
   const modelRef = useRef<Awaited<ReturnType<typeof loadModel>> | null>(null);
   const labelsRef = useRef<string[]>([]);
   const controllerRef = useRef(new AdaptiveController());
@@ -62,6 +66,9 @@ export default function InferPage() {
       if (pred.label !== "none" && pred.confidence > 0.5) {
         const pattern = vibrationPattern(pred.label, dist);
         if (pattern.length > 0 && "vibrate" in navigator) navigator.vibrate(pattern);
+      }
+      if (ledDeviceRef.current?.connected) {
+        ledDeviceRef.current.send(pred.confidence > 0.5 ? pred.label : "none", dist);
       }
 
       const ratio = signalRatio(feat);
@@ -102,11 +109,28 @@ export default function InferPage() {
     setStatus("ready");
   };
 
+  const connectLed = async () => {
+    setLedError(null);
+    try {
+      if (!ledDeviceRef.current) ledDeviceRef.current = new EchoSenseLedDevice();
+      await ledDeviceRef.current.connect();
+      setLedConnected(true);
+    } catch (e) {
+      setLedError(e instanceof Error ? e.message : "Failed to connect to ESP32");
+    }
+  };
+
+  const disconnectLed = () => {
+    ledDeviceRef.current?.disconnect();
+    setLedConnected(false);
+  };
+
   useEffect(() => {
     return () => {
       runningRef.current = false;
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      ledDeviceRef.current?.disconnect();
     };
   }, []);
 
@@ -174,6 +198,32 @@ export default function InferPage() {
         <p>chirp gain: {adaptiveState.gain.toFixed(2)}</p>
         <p>polling interval: {adaptiveState.intervalMs}ms</p>
       </section>
+
+      {bluetoothSupported() ? (
+        <section className="rounded-md border border-neutral-200 p-3 text-sm">
+          <p className="font-medium text-neutral-700">ESP32 wearable (LEDs)</p>
+          {ledError && <p className="mt-1 text-xs text-red-600">{ledError}</p>}
+          {ledConnected ? (
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-xs text-green-700">● Connected</span>
+              <button onClick={disconnectLed} className="text-xs text-red-600 underline">
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={connectLed}
+              className="mt-2 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium"
+            >
+              Connect ESP32
+            </button>
+          )}
+        </section>
+      ) : (
+        <p className="text-xs text-neutral-400">
+          ESP32 LED output needs Web Bluetooth (supported in Chrome on Android).
+        </p>
+      )}
     </main>
   );
 }
