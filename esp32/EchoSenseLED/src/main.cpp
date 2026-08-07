@@ -16,6 +16,7 @@
     e.g. "W,1.20"  or  "N,0.00"
 */
 
+#include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -101,7 +102,7 @@ void applyLeds() {
 
   if (distanceM > 0 && distanceM < NEAR_THRESHOLD_M) {
     // Close obstacle: red, blink rate scales with proximity (closer = faster).
-    unsigned long blinkIntervalMs = max(80.0, distanceM * 400.0);
+    unsigned long blinkIntervalMs = max(80.0f, distanceM * 400.0f);
     if (now - lastBlinkMs > blinkIntervalMs) {
       lastBlinkMs = now;
       blinkState = !blinkState;
