@@ -13,7 +13,11 @@ import json
 import sys
 
 import numpy as np
-import tensorflow as tf
+# tf_keras (legacy Keras 2 API) is used instead of tf.keras (Keras 3) because
+# Keras 3's model_config JSON (inbound_nodes as {"args","kwargs"} objects,
+# InputLayer's "batch_shape" key) is not understood by tensorflowjs's
+# browser-side loader, which still expects the Keras 2 format.
+import tf_keras as keras
 from sklearn.model_selection import train_test_split
 
 from features import batch_extract_features, FEATURE_LEN
@@ -39,18 +43,18 @@ def load_real_dataset(path):
 
 
 def build_model(input_len, n_classes):
-    inputs = tf.keras.Input(shape=(input_len, 1))
+    inputs = keras.Input(shape=(input_len, 1))
     x = inputs
     for filters, kernel in [(16, 9), (32, 7), (64, 5)]:
-        x = tf.keras.layers.Conv1D(filters, kernel, padding="same")(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.ReLU()(x)
-        x = tf.keras.layers.MaxPooling1D(2)(x)
-    x = tf.keras.layers.GlobalAveragePooling1D()(x)
-    x = tf.keras.layers.Dense(32, activation="relu")(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    outputs = tf.keras.layers.Dense(n_classes, activation="softmax")(x)
-    model = tf.keras.Model(inputs, outputs)
+        x = keras.layers.Conv1D(filters, kernel, padding="same")(x)
+        x = keras.layers.BatchNormalization()(x)
+        x = keras.layers.ReLU()(x)
+        x = keras.layers.MaxPooling1D(2)(x)
+    x = keras.layers.GlobalAveragePooling1D()(x)
+    x = keras.layers.Dense(32, activation="relu")(x)
+    x = keras.layers.Dropout(0.3)(x)
+    outputs = keras.layers.Dense(n_classes, activation="softmax")(x)
+    model = keras.Model(inputs, outputs)
     model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
     return model
 
@@ -86,10 +90,10 @@ def main():
     model.summary()
 
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(
+        keras.callbacks.EarlyStopping(
             monitor="val_accuracy", mode="max", patience=12, restore_best_weights=True
         ),
-        tf.keras.callbacks.ReduceLROnPlateau(
+        keras.callbacks.ReduceLROnPlateau(
             monitor="val_accuracy", mode="max", factor=0.5, patience=5, min_lr=1e-5
         ),
     ]
@@ -116,10 +120,10 @@ def main():
         acc = (y_pred[mask] == idx).mean()
         print(f"  {label:10s}: {acc:.3f} ({mask.sum()} samples)")
 
-    model.save("training/models/echosense_cnn.keras")
+    model.save("training/models/echosense_cnn.h5")
     with open("training/models/labels.json", "w") as f:
         json.dump(LABELS, f)
-    print("\nSaved model to training/models/echosense_cnn.keras")
+    print("\nSaved model to training/models/echosense_cnn.h5")
 
 
 if __name__ == "__main__":
