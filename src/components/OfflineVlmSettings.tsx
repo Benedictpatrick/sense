@@ -10,9 +10,10 @@ interface OfflineVlmSettingsProps {
 
 /**
  * Lets the user opt into downloading the offline captioning model (~400MB,
- * one-time) and switch narration over to it. Kept opt-in rather than bundled
- * by default — most users won't want a quarter-gig download on first visit,
- * and the on-device object detector (already bundled) covers the common case.
+ * one-time) and switch narration over to it, off the cloud NVIDIA NIM vision
+ * model that runs by default. Kept opt-in rather than bundled by default —
+ * most users won't want a ~400MB download on first visit, and cloud vision
+ * covers the common case (with actual internet).
  */
 export default function OfflineVlmSettings({ enabled, onEnabledChange }: OfflineVlmSettingsProps) {
   const [status, setStatus] = useState<"idle" | "downloading" | "ready" | "error">(
@@ -40,9 +41,9 @@ export default function OfflineVlmSettings({ enabled, onEnabledChange }: Offline
     <section className="rounded-md border border-neutral-200 p-3 text-sm">
       <p className="font-medium text-neutral-700">Offline vision AI (experimental)</p>
       <p className="mt-1 text-xs text-neutral-500">
-        A separate on-device captioning model (~400MB, one-time download, then works with zero internet). Less
-        structured than the built-in object detector, but describes scenes in a full sentence instead of just naming
-        the closest object.
+        A separate on-device captioning model (~400MB, one-time download, then works with zero internet) instead of
+        the cloud vision model. It only narrates — it can&apos;t call a hazard the way cloud vision does, so with
+        this on, sonar&apos;s vibration/LEDs (and a spoken stairs warning) become your only hazard signal.
       </p>
 
       {status === "idle" && (
@@ -85,7 +86,7 @@ export default function OfflineVlmSettings({ enabled, onEnabledChange }: Offline
             onChange={(e) => onEnabledChange(e.target.checked)}
             className="h-4 w-4"
           />
-          Use offline AI model for narration instead of the on-device object detector
+          Use offline AI model for narration instead of the cloud vision model
         </label>
       )}
     </section>

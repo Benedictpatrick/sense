@@ -10,8 +10,7 @@ import { type EchoSenseLedDevice, type PulseUpdate, bluetoothSupported, getShare
 import { fireSos } from "@/lib/sosService";
 import { PredictionSmoother, type SmoothedPrediction } from "@/lib/predictionSmoother";
 import { getCameraStream, captureFrame } from "@/lib/camera";
-import { type VisionResult } from "@/lib/vision";
-import { describeSceneOnDevice } from "@/lib/onDeviceVision";
+import { describeScene, VisionRequestError, type VisionResult } from "@/lib/vision";
 import { describeSceneOffline } from "@/lib/offlineVlm";
 import { speak, resetSpeechDedup, ttsSupported } from "@/lib/tts";
 import { askAboutScene } from "@/lib/ask";
@@ -21,29 +20,21 @@ import SosControl from "@/components/SosControl";
 import EmergencyContactSettings from "@/components/EmergencyContactSettings";
 import OfflineVlmSettings from "@/components/OfflineVlmSettings";
 
-// On-device detection has no network round-trip, so this can run much
-// tighter than the old ~2.5s cloud-VLM cadence — bounded mainly by how fast
-// the phone's GPU delegate can run EfficientDet-Lite per frame.
-const VISION_INTERVAL_MS = 500;
-const VISION_OFFLINE_VLM_INTERVAL_MS = 3000; // captioning is a much heavier generation step than object detection
-const VISION_ERROR_BACKOFF_MS = 2000;
-const VISION_STOP_HOLD_MS = 2000; // keeps LED override active until the next vision cycle lands
+const VISION_INTERVAL_MS = 2500;
+const VISION_OFFLINE_VLM_INTERVAL_MS = 3000; // offline captioning is a heavier generation step, similar cadence to cloud
+const VISION_ERROR_BACKOFF_MS = 6000;
+const VISION_STOP_HOLD_MS = 3500; // keeps LED override active until the next vision cycle lands
 const VISION_REMIND_MS = 8000; // re-speak an unchanged scene at most this often, like a live guide checking in
-const VISION_TRIP_THRESHOLD = 5; // consecutive failures before the circuit breaker opens (e.g. GPU/model load issues)
-const VISION_COOLDOWN_MS = 10000; // how long to stay paused before trying again
-// Frame-to-frame object detection jitters (boxes/labels flicker near a
-// threshold) much more than the old slow, stable VLM did — at 500ms cadence
-// that's enough to machine-gun TTS without this. A non-"stop" change must
-// hold for this many consecutive cycles before it's spoken; "stop" always
-// speaks immediately since delaying a hazard call is never the safe choice.
-const VISION_CONFIRM_FRAMES = 2;
-const STAIRS_CONFIDENCE_THRESHOLD = 0.8;
-// Neither the on-device object detector (COCO-only) nor the offline
-// captioner can see stairs at all — sonar is the *only* sensor that does, so
-// unlike the rest of sonar's reflex output (vibration/LEDs only, see
-// runCycle), stairs keeps a real spoken alert. Cooldown avoids nagging every
-// ~350ms cycle while stationary near a staircase.
-const STAIRS_ALERT_COOLDOWN_MS = 8000; // stairs skips the distance check entirely, so it needs a much higher bar than other labels to avoid false-alarm nagging
+const VISION_TRIP_THRESHOLD = 3; // consecutive failures before the circuit breaker opens
+const VISION_COOLDOWN_MS = 30000; // how long to stay paused before trying again (quota/outage protection)
+const STAIRS_CONFIDENCE_THRESHOLD = 0.8; // stairs skips the distance check entirely, so it needs a much higher bar than other labels to avoid false-alarm nagging
+// Cloud vision is a real VLM and can describe stairs/walls/curbs itself, so
+// sonar stays fully non-verbal when it's running. The offline captioner
+// never does (see lib/offlineVlm.ts — it deliberately never reports a
+// hazard), so with that toggle on there is otherwise no spoken hazard
+// warning at all. Stairs is the one sonar-only exception, gated to offline
+// mode specifically — see runCycle.
+const STAIRS_ALERT_COOLDOWN_MS = 8000;
 
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 type HazardLevel = "none" | "caution" | "stop";
@@ -120,8 +111,6 @@ export default function InferPage() {
   const visionStopUntilRef = useRef(0);
   const lastSpokenKeyRef = useRef<string>("");
   const lastSpokenAtRef = useRef(0);
-  const visionPendingKeyRef = useRef<string>("");
-  const visionPendingCountRef = useRef(0);
   const sosActiveRef = useRef(false);
   const ledDeviceRef = useRef<EchoSenseLedDevice | null>(null);
   const pulseUnsubscribeRef = useRef<(() => void) | null>(null);
@@ -173,11 +162,17 @@ export default function InferPage() {
 
       const hazard = sonarHazardLevel(pred.label, pred.confidence, dist);
       setSonarHazard(hazard);
-      // Sonar's general reflex alerts stay non-verbal (vibration + LEDs only)
-      // — they were talking over vision narration for hazards vision covers
-      // anyway. Stairs is the one exception: neither vision path can see it
-      // at all, so silence here would mean a real fall hazard has no voice.
-      if (pred.label === "stairs" && pred.confidence > STAIRS_CONFIDENCE_THRESHOLD && !sosActiveRef.current) {
+      // Sonar stays non-verbal (vibration + LEDs only) whenever cloud vision
+      // is running — it's a real VLM and covers stairs/walls/curbs itself.
+      // The offline captioner never reports a hazard at all (see
+      // lib/offlineVlm.ts), so with that toggle on, stairs keeps a narrow
+      // spoken exception — otherwise a real fall hazard would have no voice.
+      if (
+        useOfflineVlmRef.current &&
+        pred.label === "stairs" &&
+        pred.confidence > STAIRS_CONFIDENCE_THRESHOLD &&
+        !sosActiveRef.current
+      ) {
         const now = Date.now();
         if (now - stairsAlertCooldownRef.current > STAIRS_ALERT_COOLDOWN_MS) {
           stairsAlertCooldownRef.current = now;
@@ -212,41 +207,30 @@ export default function InferPage() {
   const runVisionCycle = useCallback(async () => {
     if (!visionRunningRef.current || !videoRef.current) return;
     try {
-      const result = useOfflineVlmRef.current
-        ? await describeSceneOffline(videoRef.current)
-        : await describeSceneOnDevice(videoRef.current);
+      const isOffline = useOfflineVlmRef.current;
+      let result: VisionResult;
+      if (isOffline) {
+        result = await describeSceneOffline(videoRef.current);
+      } else {
+        const frame = captureFrame(videoRef.current);
+        if (!frame) {
+          setVisionError("Camera feed not ready yet…");
+          return;
+        }
+        result = await describeScene(frame);
+      }
       visionErrorStreakRef.current = 0;
       setVisionResult(result);
       setVisionError(null);
 
       const isStop = result.hazard_level === "stop";
       // The offline captioner never sets hazard_level above "none" (see
-      // lib/offlineVlm.ts) — for it, "none" means "here's a caption," not
-      // "nothing to say," so it keys off the caption text itself and always
-      // has content to speak. The object detector's "none" genuinely means
-      // no data (it can't see stairs/curbs/walls), so it stays silent and
-      // lets sonar own the all-clear.
-      const isOffline = useOfflineVlmRef.current;
+      // lib/offlineVlm.ts) — its "none" still means "here's a caption," so it
+      // keys off the caption text itself. Cloud vision's "none" is a real,
+      // deliberate "path is clear" read from an actual VLM, unlike the old
+      // on-device object detector's "none" (which just meant "no COCO object
+      // found") — so both sources always have something worth speaking.
       const key = isOffline ? `offline:${result.message}` : `${result.direction}:${result.hazard_level}`;
-      const hasContent = isOffline || result.hazard_level !== "none";
-
-      // Debounce non-"stop" changes against detector/caption jitter — a
-      // "stop" call is never delayed.
-      if (isStop) {
-        visionPendingKeyRef.current = key;
-        visionPendingCountRef.current = VISION_CONFIRM_FRAMES;
-      } else if (key === visionPendingKeyRef.current) {
-        visionPendingCountRef.current += 1;
-      } else {
-        visionPendingKeyRef.current = key;
-        visionPendingCountRef.current = 1;
-      }
-      // Frame-confirmation debounces a classifier flickering between
-      // discrete labels — it's the wrong primitive for free-text captions,
-      // which legitimately differ every frame even for the same scene. The
-      // offline path's jitter protection is VISION_OFFLINE_VLM_INTERVAL_MS's
-      // slower cadence plus tts.ts's own repeat-message dedup, not this.
-      const confirmed = isStop || isOffline || visionPendingCountRef.current >= VISION_CONFIRM_FRAMES;
 
       const changed = key !== lastSpokenKeyRef.current;
       const dueForReminder = Date.now() - lastSpokenAtRef.current > VISION_REMIND_MS;
@@ -254,7 +238,7 @@ export default function InferPage() {
       // flow; also suppressed (except genuine hazards) while the user is mid-question so
       // routine chatter doesn't step on their answer.
       const canSpeak = !sosActiveRef.current && (!askingRef.current || isStop);
-      if (hasContent && canSpeak && confirmed && (changed || dueForReminder || isStop)) {
+      if (canSpeak && (changed || dueForReminder || isStop)) {
         speak(result.message, isStop ? "urgent" : "normal");
         lastSpokenKeyRef.current = key;
         lastSpokenAtRef.current = Date.now();
@@ -265,11 +249,18 @@ export default function InferPage() {
       }
     } catch (e) {
       visionErrorStreakRef.current += 1;
-      setVisionError(e instanceof Error ? e.message : "Vision cycle failed");
+      const rateLimited = e instanceof VisionRequestError && e.status === 429;
+      setVisionError(
+        rateLimited
+          ? "Vision model rate-limited — sonar navigation keeps running."
+          : e instanceof Error
+            ? e.message
+            : "Vision cycle failed",
+      );
 
-      // Circuit breaker: after repeated failures (camera drop, GPU/model
-      // issue, etc.), go quiet for a cooldown instead of erroring every
-      // cycle — sonar + LEDs are unaffected and keep working the whole time.
+      // Circuit breaker: after repeated failures (rate limit or otherwise),
+      // stop hammering the API and go quiet for a cooldown instead of erroring
+      // every cycle — sonar + LEDs are unaffected and keep working the whole time.
       if (visionErrorStreakRef.current >= VISION_TRIP_THRESHOLD) {
         setVisionPaused(true);
         if (visionRunningRef.current) {
@@ -283,10 +274,6 @@ export default function InferPage() {
       }
     } finally {
       if (visionRunningRef.current && visionErrorStreakRef.current < VISION_TRIP_THRESHOLD) {
-        // The offline captioning model is a much bigger encoder-decoder
-        // generation step than the object detector's single forward pass —
-        // back it off to a slower cadence so it doesn't queue up frames
-        // faster than it can caption them.
         const baseInterval = useOfflineVlmRef.current ? VISION_OFFLINE_VLM_INTERVAL_MS : VISION_INTERVAL_MS;
         const delay = visionErrorStreakRef.current > 0 ? VISION_ERROR_BACKOFF_MS : baseInterval;
         visionTimeoutRef.current = setTimeout(runVisionCycle, delay);
@@ -493,9 +480,9 @@ export default function InferPage() {
       <header>
         <h1 className="text-2xl font-semibold">EchoSense — Live</h1>
         <p className="mt-1 text-sm text-neutral-500">
-          Sonar (1D CNN) + on-device camera vision (MediaPipe object detection, GPU-accelerated) fused into one
-          hazard verdict — driving vibration, spoken guidance, and the ESP32 LEDs together, running continuously with
-          no cloud dependency.
+          Sonar (1D CNN) + camera vision (Llama 3.2 Vision via NVIDIA NIM) fused into one hazard verdict — driving
+          vibration, spoken guidance, and the ESP32 LEDs together, running continuously. An offline on-device model
+          is available below as an alternative narration source.
         </p>
         <Link
           href="/"
@@ -615,8 +602,8 @@ export default function InferPage() {
 
         {visionPaused && (
           <p className="mt-2 text-xs text-amber-600">
-            Vision paused (repeated failures) — retrying automatically. Sonar navigation and vibration keep working
-            normally.
+            Vision paused (repeated failures / rate limit) — retrying automatically. Sonar navigation and vibration
+            keep working normally.
           </p>
         )}
         {!visionPaused && visionError && <p className="mt-2 text-xs text-red-600">{visionError}</p>}
