@@ -49,7 +49,18 @@ export function isOfflineVlmReady(): boolean {
  * dtype is pinned to "q8" (quantized, ~246MB total across encoder+decoder)
  * explicitly — left unset, transformers.js only defaults to q8 on the wasm
  * backend; on webgpu it defaults to fp32, which is a ~950MB download instead
- * of the size promised in the UI.
+ * of the size promised in the UI. `device` is pinned to "wasm" to match
+ * (the actual default in-browser already, but pinned so it can't silently
+ * change).
+ *
+ * The decoder specifically is fp16, not q8: on-device testing hit an ONNX
+ * Runtime Web error ("missing required transposed weight input") from the
+ * quantized decoder — its int8 file appears to use MatMulNBits-style block
+ * quantization, whose WASM kernel is immature and doesn't reliably run in
+ * the browser today. The encoder (a much simpler ViT forward pass) stays
+ * q8, which works fine — only the autoregressive GPT-2 decoder hit this.
+ * Total download is ~90MB (encoder, q8) + ~310MB (decoder, fp16) ≈ 400MB,
+ * not the ~250MB an all-q8 download would have been.
  */
 export async function downloadOfflineVlm(onProgress?: (p: OfflineVlmProgress) => void): Promise<void> {
   if (ready) return;
@@ -57,7 +68,12 @@ export async function downloadOfflineVlm(onProgress?: (p: OfflineVlmProgress) =>
     pipelinePromise = import("@huggingface/transformers")
       .then(({ pipeline }) =>
         pipeline("image-to-text", MODEL_ID, {
-          dtype: "q8",
+          // Keyed by transformers.js's internal session name, not the ONNX
+          // filename — the vision-encoder-decoder architecture calls the
+          // encoder session "model" (see session_config.js), not
+          // "encoder_model", even though the downloaded file is named that.
+          dtype: { model: "q8", decoder_model_merged: "fp16" },
+          device: "wasm",
           progress_callback: (event: TransformersProgressEvent) => {
             if (event.status === "progress" && onProgress) {
               onProgress({ file: event.file ?? "", loaded: event.loaded ?? 0, total: event.total ?? 0 });
