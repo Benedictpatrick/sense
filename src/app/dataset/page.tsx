@@ -40,8 +40,11 @@ export default function DatasetPage() {
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Dataset</h1>
-        <Link href="/collect" className="text-sm text-blue-600 underline">
-          ← Back to collection
+        <Link
+          href="/collect"
+          className="inline-flex items-center gap-1 rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-600 transition-colors hover:bg-neutral-100"
+        >
+          <span aria-hidden="true">←</span> Back to collection
         </Link>
       </header>
 

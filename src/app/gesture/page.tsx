@@ -5,6 +5,10 @@ import Link from "next/link";
 import { loadHandLandmarker, getCameraStream } from "@/lib/handTracker";
 import { classifyGesture, GESTURE_SPEECH, type GestureLabel } from "@/lib/gestureRules";
 import { loadAlphabetModel, loadAlphabetLabels, classifyLetter } from "@/lib/gestureAlphabetModel";
+import { fireSos, isSosActive } from "@/lib/sosService";
+import { getSpeechRecognitionCtor, type SpeechRecognitionLike } from "@/lib/speechRecognition";
+import SosStatusOverlay from "@/components/SosStatusOverlay";
+import EmergencyContactSettings from "@/components/EmergencyContactSettings";
 
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 type Mode = "word" | "letter";
@@ -84,6 +88,7 @@ export default function GesturePage() {
   const [currentLetter, setCurrentLetter] = useState<string | null>(null);
   const [buffer, setBuffer] = useState("");
   const [history, setHistory] = useState<string[]>([]);
+  const [voiceStatus, setVoiceStatus] = useState<"off" | "listening" | "unsupported" | "denied" | "error">("off");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -104,6 +109,9 @@ export default function GesturePage() {
   const stableLetterRef = useRef<string | null>(null);
   const letterStreakRef = useRef(0);
   const appendedForCurrentHoldRef = useRef(false);
+
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const listeningRef = useRef(false);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -154,10 +162,15 @@ export default function GesturePage() {
     if (streakRef.current >= CONFIRM_FRAMES) {
       setCurrentGesture(label);
       if (label !== "none" && !spokenForCurrentHoldRef.current) {
-        const phrase = GESTURE_SPEECH[label];
-        speak(phrase);
-        setHistory((h) => [phrase, ...h].slice(0, 10));
         spokenForCurrentHoldRef.current = true;
+        if (label === "help") {
+          setHistory((h) => ["SOS triggered (help gesture)", ...h].slice(0, 10));
+          fireSos();
+        } else {
+          const phrase = GESTURE_SPEECH[label];
+          speak(phrase);
+          setHistory((h) => [phrase, ...h].slice(0, 10));
+        }
       }
     }
   }, []);
@@ -215,6 +228,68 @@ export default function GesturePage() {
     rafRef.current = requestAnimationFrame(loop);
   }, [drawFrame, runWordMode, runLetterMode]);
 
+  const startVoiceListening = () => {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      setVoiceStatus("unsupported");
+      return; // not supported (e.g. Firefox) — gesture + button triggers still work
+    }
+    listeningRef.current = true;
+
+    const recognition = new Ctor();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+    recognition.onstart = () => setVoiceStatus("listening");
+    recognition.onresult = (e) => {
+      if (isSosActive()) return;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const transcript = e.results[i][0]?.transcript?.toLowerCase() ?? "";
+        if (transcript.includes("help")) {
+          setHistory((h) => ["SOS triggered (voice: \"help\")", ...h].slice(0, 10));
+          fireSos();
+          break;
+        }
+      }
+    };
+    recognition.onend = () => {
+      // Browsers auto-stop recognition after every pause in speech (this is
+      // normal, not an error) — restart immediately while still listening.
+      if (listeningRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          // Already starting/started — a restart is already in flight, ignore.
+        }
+      }
+    };
+    recognition.onerror = (e) => {
+      // "no-speech" fires constantly during normal silence between words —
+      // onend's restart already handles it, nothing to surface. Permission
+      // and hardware errors are real failures: stop retrying and show why.
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        listeningRef.current = false;
+        setVoiceStatus("denied");
+        return;
+      }
+      setVoiceStatus("error");
+    };
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      // Already running — ignore.
+    }
+  };
+
+  const stopVoiceListening = () => {
+    listeningRef.current = false;
+    setVoiceStatus("off");
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+  };
+
   const start = async () => {
     setError(null);
     setStatus("loading");
@@ -232,6 +307,7 @@ export default function GesturePage() {
       setStatus("running");
       runningRef.current = true;
       rafRef.current = requestAnimationFrame(loop);
+      startVoiceListening();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start");
       setStatus("error");
@@ -241,6 +317,7 @@ export default function GesturePage() {
   const stop = () => {
     runningRef.current = false;
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    stopVoiceListening();
     setStatus("ready");
   };
 
@@ -255,18 +332,24 @@ export default function GesturePage() {
       runningRef.current = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      stopVoiceListening();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-6 p-6">
+    <main className="mx-auto flex max-w-md flex-col gap-6 p-6 pb-24">
+      <SosStatusOverlay />
       <header>
         <h1 className="text-2xl font-semibold">GestureTalk — Live</h1>
         <p className="mt-1 text-sm text-neutral-500">
           Sense (camera) → Infer (MediaPipe + {mode === "word" ? "gesture rules" : "CNN"}) → Act (speech).
         </p>
-        <Link href="/" className="mt-1 inline-block text-sm text-blue-600 underline">
-          ← Back
+        <Link
+          href="/"
+          className="mt-2 inline-flex items-center gap-1 rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-600 transition-colors hover:bg-neutral-100"
+        >
+          <span aria-hidden="true">←</span> Back
         </Link>
       </header>
 
@@ -370,14 +453,47 @@ export default function GesturePage() {
       <section className="rounded-md border border-neutral-200 p-3 text-xs text-neutral-500">
         <p className="font-medium text-neutral-700">Phase 1 scope</p>
         <p>
-          Common Words: Hello (open palm) · Yes (fist) · No (index+middle) · I Love You (ILY handshape) —
-          static single-hand signs only.
+          Common Words: Hello (open palm) · Yes (fist) · No (index+middle) · I Love You (ILY handshape) · SOS
+          (thumb+pinky, app-specific — not authentic ASL) — static single-hand signs only.
         </p>
         <p className="mt-1">
           Fingerspelling: A-Z static handshapes (excludes J, Z — those require motion), CNN trained on real
           public ASL image data.
         </p>
+        <p className="mt-1">
+          While running, saying &quot;help&quot; out loud also triggers SOS (needs browser speech-recognition
+          support — not available in Firefox).
+        </p>
       </section>
+
+      {status === "running" && (
+        <section className="rounded-md border border-neutral-200 p-3 text-xs">
+          <p className="font-medium text-neutral-700">Voice &quot;help&quot; detection</p>
+          {voiceStatus === "listening" && <p className="mt-1 text-green-700">🎤 Listening…</p>}
+          {voiceStatus === "unsupported" && (
+            <p className="mt-1 text-neutral-500">Not supported in this browser (try Chrome or Safari).</p>
+          )}
+          {voiceStatus === "denied" && (
+            <div className="mt-1 flex items-center justify-between text-red-600">
+              <span>Microphone permission denied — check your browser&apos;s site settings and allow it.</span>
+              <button onClick={startVoiceListening} className="ml-2 shrink-0 underline">
+                Retry
+              </button>
+            </div>
+          )}
+          {voiceStatus === "error" && (
+            <div className="mt-1 flex items-center justify-between text-amber-600">
+              <span>Speech recognition hit an error.</span>
+              <button onClick={startVoiceListening} className="ml-2 shrink-0 underline">
+                Retry
+              </button>
+            </div>
+          )}
+          {voiceStatus === "off" && <p className="mt-1 text-neutral-400">Starting…</p>}
+        </section>
+      )}
+
+      <EmergencyContactSettings />
     </main>
   );
 }

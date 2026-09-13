@@ -53,3 +53,8 @@ training/data/*.npz
 
 # downloadable public dataset (see training/train_gesture_cnn.py for source URLs)
 training/data/sign_mnist/
+
+certificates
+
+# PlatformIO build cache
+esp32/**/.pio/

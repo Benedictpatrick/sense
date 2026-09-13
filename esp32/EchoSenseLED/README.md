@@ -8,9 +8,13 @@ displays the result.
 ## Wiring
 
 - Yellow LED: anode → 220–330Ω resistor → **GPIO 5**, cathode → GND
-- Red LED: anode → 220–330Ω resistor → **GPIO 4**, cathode → GND
+- Red LED: anode → 220–330Ω resistor → **GPIO 18**, cathode → GND
+- MAX3010x pulse sensor (I2C, optional): VIN → 3.3V, GND → GND, SDA → **GPIO 21**, SCL → **GPIO 22**
 
 (Change `YELLOW_PIN`/`RED_PIN` in `src/main.cpp` if you wire different pins.)
+
+The pulse sensor is optional — if it's not connected, the board logs
+`MAX3010x pulse sensor NOT found` at boot and everything else (BLE, sonar/vision LEDs) works exactly as before.
 
 ## Flashing with PlatformIO (VS Code)
 
@@ -37,7 +41,24 @@ displays the result.
    - both off → nothing detected
    - yellow steady → obstacle at moderate distance
    - red, blinking faster as you get closer → obstacle nearby
-   - yellow/red alternating fast → stairs (distinct high-risk pattern)
+   - yellow/red alternating (150ms) → stairs
+   - yellow/red alternating fast (90ms) → fused hard-stop (sonar and/or
+     vision both flagging an immediate hazard)
+   - yellow/red alternating very fast (60ms) → SOS triggered (button, shake,
+     shouted "help", the help gesture on /gesture, **or** the board's own
+     pulse sensor detecting ≥120 BPM sustained for 3+ seconds — this one
+     works even without the phone connected, since the board checks it
+     locally)
+
+To test the pulse-triggered SOS: place a finger flat on the MAX3010x sensor
+and hold still for a steady reading. It won't trigger at a normal resting
+heart rate — you'd need an actual elevated BPM (e.g. right after exercise) or
+you can temporarily lower `PULSE_SOS_BPM` in `src/main.cpp` for a quick test.
+
+LEDs are driven at reduced PWM brightness (not full digitalWrite HIGH) and no
+pattern ever lights both LEDs at the same instant — this keeps peak current
+draw low enough to run reliably off laptop USB power, which can't always
+supply enough current for two LEDs at full brightness simultaneously.
 
 Web Bluetooth requires Chrome (Android) and a secure (HTTPS) origin — the
 deployed Vercel URL already satisfies this.

@@ -61,13 +61,14 @@ export function getFingerStates(landmarks: Point3D[]): FingerStates {
   };
 }
 
-export type GestureLabel = "hello" | "yes" | "no" | "i_love_you" | "none";
+export type GestureLabel = "hello" | "yes" | "no" | "i_love_you" | "help" | "none";
 
 export const GESTURE_SPEECH: Record<GestureLabel, string> = {
   hello: "Hello",
   yes: "Yes",
   no: "No",
   i_love_you: "I love you",
+  help: "Help",
   none: "",
 };
 
@@ -78,6 +79,10 @@ export function classifyGesture(landmarks: Point3D[]): GestureLabel {
   if (!f.thumb && !f.index && !f.middle && !f.ring && !f.pinky) return "yes"; // fist
   if (f.index && f.middle && !f.ring && !f.pinky) return "no"; // index+middle extended
   if (f.thumb && f.index && !f.middle && !f.ring && f.pinky) return "i_love_you"; // ILY handshape
+  // "help" is NOT authentic ASL (real ASL help uses two hands + motion, out of
+  // scope for this single-hand static-pose classifier) — it's an app-specific
+  // SOS handshape: "shaka" (thumb + pinky only), distinct from every sign above.
+  if (f.thumb && !f.index && !f.middle && !f.ring && f.pinky) return "help";
 
   return "none";
 }
