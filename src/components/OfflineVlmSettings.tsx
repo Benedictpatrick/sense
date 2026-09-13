@@ -10,10 +10,11 @@ interface OfflineVlmSettingsProps {
 
 /**
  * Lets the user opt into downloading the offline captioning model (~400MB,
- * one-time) and switch narration over to it, off the cloud NVIDIA NIM vision
- * model that runs by default. Kept opt-in rather than bundled by default —
- * most users won't want a ~400MB download on first visit, and cloud vision
- * covers the common case (with actual internet).
+ * one-time) and switch narration over to it, off the cloud vision model
+ * (labeled "Qwen VL 4B" in the UI) that runs by default. Kept opt-in rather
+ * than bundled by default — most users won't want a ~400MB download on
+ * first visit, and cloud vision covers the common case (with actual
+ * internet).
  */
 export default function OfflineVlmSettings({ enabled, onEnabledChange }: OfflineVlmSettingsProps) {
   const [status, setStatus] = useState<"idle" | "downloading" | "ready" | "error">(

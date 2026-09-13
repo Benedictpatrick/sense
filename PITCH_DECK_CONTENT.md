@@ -55,7 +55,7 @@ An AI-fused wearable navigation and communication system for the blind, low-visi
 └───────────┘              │              │              └─────────────┘
 ┌───────────┐              │ NONE/CAUTION/│
 │  Vision    │──describe──▶│    STOP      │
-│ (camera +  │  NVIDIA NIM │              │
+│ (camera +  │  Qwen VL 4B │              │
 │  cloud VLM)│  ~2.5s      │              │
 └───────────┘              └─────────────┘
 ```
@@ -76,7 +76,7 @@ An AI-fused wearable navigation and communication system for the blind, low-visi
 | Styling | **Tailwind CSS v4** | Rapid, consistent UI under demo time pressure |
 | On-device ML (sonar) | **TensorFlow.js 4.22** — custom 1D CNN | Runs entirely in-browser, no round-trip latency, works offline |
 | Sonar signal processing | Custom **chirp generation + cross-correlation** (Web Audio API) | Classic sonar/radar technique — turns a phone speaker + mic into an ultrasonic rangefinder |
-| Vision AI | **NVIDIA NIM** — `meta/llama-3.2-11b-vision-instruct` (free tier) | Real vision-language model, zero API cost, OpenAI-compatible endpoint |
+| Vision AI | **Qwen VL 4B** (free tier) | Real vision-language model, zero API cost, OpenAI-compatible endpoint |
 | Speech output | **Web Speech API** (`SpeechSynthesisUtterance`) | Native browser TTS, zero extra dependencies, works offline once loaded |
 | Hardware link | **Web Bluetooth (BLE)** | No native app needed — the browser talks directly to the wearable |
 | Wearable | **ESP32** running **C++ (Arduino/PlatformIO)**, **BLE GATT server** | Cheap (~$10), battery-powered, drives two indicator LEDs as a physical hazard signal |
@@ -89,7 +89,7 @@ An AI-fused wearable navigation and communication system for the blind, low-visi
 
 ## Slide 6 — Deep Dive: The Vision AI
 
-- Model: **Llama 3.2 11B Vision Instruct**, served free via **NVIDIA NIM** (`build.nvidia.com`) — an OpenAI-compatible multimodal chat endpoint.
+- Model: **Qwen VL 4B**, served free via an OpenAI-compatible multimodal chat endpoint.
 - **Prompt-engineered for a live sighted-guide voice**, not a form: every response names the specific object, its clock-position, distance in steps, and a concrete action — "Chair on your left, few steps up — swing right," not "Object detected: chair."
 - **Frame captured at 1280×720 / 85% JPEG** for enough detail to actually read signage and identify specific objects, not just shapes.
 - **Hazard-first prioritization** baked into the prompt: moving people/vehicles, steps, curbs, and drop-offs always outrank background detail, and anything within a couple of steps is treated as urgent even if visually minor.
@@ -127,7 +127,7 @@ An AI-fused wearable navigation and communication system for the blind, low-visi
 ## Slide 9 — Reliability Engineering (built for a live demo, not just a lab)
 
 - **Circuit breaker on the vision API**: after 3 consecutive failures (rate limit, network blip, etc.), vision pauses for a 30s cooldown and retries automatically — instead of erroring every cycle in front of an audience. Sonar and the ESP32 are completely unaffected the entire time.
-- **Rate-limit-aware backoff**: NVIDIA's free-tier `429` responses are detected distinctly and back off instead of hammering an exhausted quota.
+- **Rate-limit-aware backoff**: the vision API's free-tier `429` responses are detected distinctly and back off instead of hammering an exhausted quota.
 - **Auto-reconnect**: if the camera or mic stream drops unexpectedly (OS reclaims it, app backgrounded), it's silently reacquired without user intervention.
 - **Graceful on-screen degradation**: "Vision paused — sonar navigation keeps working normally" is shown explicitly, so a vision outage reads as *handled*, not *broken*.
 
@@ -206,6 +206,6 @@ Live demo: `https://ablemind-murex.vercel.app`
 - Vision hazard escalation for sonar: <0.5m = stop, <1.2m = caution, stairs = always stop regardless of distance
 - Sonar reflex alert cooldown: 4s (prevents nagging while stationary near an obstacle)
 - Image sent to the vision model: 1280×720, JPEG quality 0.85
-- Vision model: `meta/llama-3.2-11b-vision-instruct` via NVIDIA NIM, free tier
+- Vision model: Qwen VL 4B, free tier
 - Deployed on Vercel, HTTPS by default (required for camera/mic/Bluetooth permissions on mobile)
 - ESP32 firmware: C++/Arduino, BLE GATT server, two GPIO-driven LEDs, protocol is a simple `<classCode>,<distanceMeters>` ASCII string over BLE writes

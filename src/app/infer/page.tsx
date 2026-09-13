@@ -480,7 +480,7 @@ export default function InferPage() {
       <header>
         <h1 className="text-2xl font-semibold">EchoSense — Live</h1>
         <p className="mt-1 text-sm text-neutral-500">
-          Sonar (1D CNN) + camera vision (Llama 3.2 Vision via NVIDIA NIM) fused into one hazard verdict — driving
+          Sonar (1D CNN) + camera vision (Qwen VL 4B) fused into one hazard verdict — driving
           vibration, spoken guidance, and the ESP32 LEDs together, running continuously. An offline on-device model
           is available below as an alternative narration source.
         </p>
